@@ -1,19 +1,23 @@
+import argparse
+import glob
+import json
 import os
 import torch
+
 import numpy as np
-import argparse
-from os.path import join as pjoin
-from dataset.topology_loader import TopologyLoader
+
 from architecture.generate_model import EnvelopeGenerate, BlendShapesGenerate
 from architecture import create_envelope_model, create_residual_model
+from dataset.bvh_writer import WriterWrapper
+from dataset.load_test_anim import load_test_anim, load_cmu_mocap_anim
+from dataset.mesh_dataset import StaticMeshes, parent_smpl
+from dataset.obj_io import write_obj
+from dataset.topology_loader import TopologyLoader
 from models.kinematics import ForwardKinematics
 from models.transforms import aa2mat
 from models.deformation import deform_with_offset
-from dataset.mesh_dataset import StaticMeshes, parent_smpl
-from dataset.load_test_anim import load_test_anim, load_cmu_mocap_anim
-from dataset.bvh_writer import WriterWrapper
-from dataset.obj_io import write_obj
 from option import TrainingOptionParser
+from os.path import join as pjoin
 from tqdm import tqdm
 
 
@@ -161,6 +165,32 @@ def main():
     # Read from CMU mocap dataset CMU/*/*_*_poses.npz
     elif args.pose_file.endswith("npz"):
         test_pose = load_cmu_mocap_anim(args.pose_file, device)
+    # Read from EasyMocap Multiple Views Single Person folder
+    else:
+        assert os.path.isdir(args.pose_file)
+        pose_files = glob.glob(os.path.join(args.pose_file, "*.json"))
+        pose_files.sort()
+        test_pose = torch.zeros((len(pose_files), 72), device=device, dtype=torch.float)
+
+        if "smplfull" in args.pose_file:
+            for i in range(len(pose_files)):
+                with open(pose_files[i]) as f:
+                    file_data = json.load(f)
+                    if "annots" in file_data:
+                        if "poses" in file_data["annots"][0]:
+                            test_pose[i, :] = torch.as_tensor(
+                                file_data["annots"][0]["poses"]
+                            )
+                    else:
+                        test_pose[i, :] = test_pose[i - 1, :]
+        else:
+            for i in range(len(pose_files)):
+                with open(pose_files[i]) as f:
+                    file_data = json.load(f)[0]
+                    if "annots" in file_data:
+                        test_pose[i, :] = torch.as_tensor(file_data["poses"])
+                    else:
+                        test_pose[i, :] = test_pose[i - 1, :]
 
     topo_loader = TopologyLoader(device=device, debug=False)
     mesh = prepare_obj(args.obj_path, topo_loader)
